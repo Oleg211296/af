@@ -21,21 +21,44 @@ jobs:
           set -euo pipefail
           printf '%s' "$SIGNED_URL_B64" | base64 -d > signed-url.txt
           curl -fL "$(cat signed-url.txt)" -o yandex-game.zip.b64
-          base64 -d yandex-game.zip.b64 > yandex-game.zip
+          base64 -d yandex-game.zip.b64 > source-yandex-game.zip
           python3 - <<'PY'
-          import zipfile, hashlib, os, sys
-          p='yandex-game.zip'
-          with zipfile.ZipFile(p) as z:
+          import zipfile, hashlib, os
+
+          src='source-yandex-game.zip'
+          dst='yandex-game.zip'
+
+          with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(
+              dst, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9
+          ) as zout:
+              for info in zin.infolist():
+                  if info.is_dir():
+                      continue
+                  name=info.filename.replace('\\', '/')
+                  while name.startswith('./'):
+                      name=name[2:]
+                  assert name, f'empty normalized path from {info.filename!r}'
+                  assert not name.startswith(('project/','dist/','build/')), name
+                  out=zipfile.ZipInfo(name, date_time=info.date_time)
+                  out.external_attr=info.external_attr
+                  out.create_system=info.create_system
+                  out.compress_type=zipfile.ZIP_DEFLATED
+                  zout.writestr(out, zin.read(info))
+
+          with zipfile.ZipFile(dst, 'r') as z:
               names=[n for n in z.namelist() if not n.endswith('/')]
               assert 'index.html' in names, 'index.html is not at ZIP root'
-              bad=[n for n in names if n.startswith(('project/','dist/','build/'))]
-              assert not bad, f'outer wrapper folder found: {bad[:5]}'
+              assert not any(n.startswith('./') for n in names), 'leading ./ prefix remains'
+              assert not any(n.startswith(('project/','dist/','build/')) for n in names)
               roots=sorted({n.split('/')[0] for n in names})
+              expected={'index.html','favicon.ico','src','assets','cases','i18n','registries'}
+              assert expected.issubset(set(roots)), (expected, roots)
               print('ROOTS=' + ','.join(roots))
               print('FILES=' + str(len(names)))
-          h=hashlib.sha256(open(p,'rb').read()).hexdigest()
+
+          h=hashlib.sha256(open(dst,'rb').read()).hexdigest()
           print('SHA256=' + h)
-          print('SIZE=' + str(os.path.getsize(p)))
+          print('SIZE=' + str(os.path.getsize(dst)))
           PY
 
       - name: Upload exact ZIP
